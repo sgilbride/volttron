@@ -1,59 +1,73 @@
 # -*- coding: utf-8 -*- {{{
 # vim: set fenc=utf-8 ft=python sw=4 ts=4 sts=4 et:
-
-# Copyright (c) 2013, Battelle Memorial Institute
-# All rights reserved.
 #
-# Redistribution and use in source and binary forms, with or without
-# modification, are permitted provided that the following conditions
-# are met:
+# Copyright 2017, Battelle Memorial Institute.
 #
-# 1. Redistributions of source code must retain the above copyright
-#    notice, this list of conditions and the following disclaimer.
-# 2. Redistributions in binary form must reproduce the above copyright
-#    notice, this list of conditions and the following disclaimer in
-#    the documentation and/or other materials provided with the
-#    distribution.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
 #
-# THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
-# "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
-# LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
-# A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
-# OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
-# SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
-# LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
-# DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
-# THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
-# (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
-# OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+# http://www.apache.org/licenses/LICENSE-2.0
 #
-# The views and conclusions contained in the software and documentation
-# are those of the authors and should not be interpreted as representing
-# official policies, either expressed or implied, of the FreeBSD
-# Project.
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 #
-# This material was prepared as an account of work sponsored by an
-# agency of the United States Government.  Neither the United States
-# Government nor the United States Department of Energy, nor Battelle,
-# nor any of their employees, nor any jurisdiction or organization that
-# has cooperated in the development of these materials, makes any
-# warranty, express or implied, or assumes any legal liability or
-# responsibility for the accuracy, completeness, or usefulness or any
-# information, apparatus, product, software, or process disclosed, or
-# represents that its use would not infringe privately owned rights.
-#
-# Reference herein to any specific commercial product, process, or
-# service by trade name, trademark, manufacturer, or otherwise does not
-# necessarily constitute or imply its endorsement, recommendation, or
+# This material was prepared as an account of work sponsored by an agency of
+# the United States Government. Neither the United States Government nor the
+# United States Department of Energy, nor Battelle, nor any of their
+# employees, nor any jurisdiction or organization that has cooperated in the
+# development of these materials, makes any warranty, express or
+# implied, or assumes any legal liability or responsibility for the accuracy,
+# completeness, or usefulness or any information, apparatus, product,
+# software, or process disclosed, or represents that its use would not infringe
+# privately owned rights. Reference herein to any specific commercial product,
+# process, or service by trade name, trademark, manufacturer, or otherwise
+# does not necessarily constitute or imply its endorsement, recommendation, or
 # favoring by the United States Government or any agency thereof, or
-# Battelle Memorial Institute. The views and opinions of authors
-# expressed herein do not necessarily state or reflect those of the
+# Battelle Memorial Institute. The views and opinions of authors expressed
+# herein do not necessarily state or reflect those of the
 # United States Government or any agency thereof.
 #
-# PACIFIC NORTHWEST NATIONAL LABORATORY
-# operated by BATTELLE for the UNITED STATES DEPARTMENT OF ENERGY
+# PACIFIC NORTHWEST NATIONAL LABORATORY operated by
+# BATTELLE for the UNITED STATES DEPARTMENT OF ENERGY
 # under Contract DE-AC05-76RL01830
-#}}}
+# }}}
+
+'''bootstrap - Prepare a VOLTTRON virtual environment.
+
+Bootstrapping is broken into two stages. The first stage should only be
+invoked once per virtual environment. It downloads virtualenv and
+creates a virtual Python environment in the virtual environment
+directory (defaults to a subdirectory named env in the same directory as
+this script). It then executes stage two using the newly installed
+virtual environment. Stage two uses the new virtual Python environment
+to install VOLTTRON and its dependencies.
+
+If a new dependency is added, this script may be run again using the
+Python executable in the virtual environment to re-run stage two:
+
+  env/bin/python bootstrap.py
+
+To speed up bootstrapping in a test environment, use the --wheel
+feature, which might look something like this:
+
+  $ export PIP_WHEEL_DIR=/path/to/cache/wheelhouse
+  $ export PIP_FIND_LINKS=file://$PIP_WHEEL_DIR
+  $ mkdir -p $PIP_WHEEL_DIR
+  $ python2.7 bootstrap.py -o
+  $ env/bin/python bootstrap.py --wheel
+  $ env/bin/python bootstrap.py
+
+Instead of setting the environment variables, a pip configuration file
+may be used. Look here for more information on configuring pip:
+
+  https://pip.pypa.io/en/latest/user_guide.html#configuration
+
+'''
+
 
 from __future__ import print_function
 
@@ -63,18 +77,12 @@ import logging
 import os
 import subprocess
 import sys
+import json
 
 
 _log = logging.getLogger(__name__)
 
 _WINDOWS = sys.platform.startswith('win')
-
-
-def check_call(args):
-    '''Run a subprocess exiting if an error occurs.'''
-    result = subprocess.call(args)
-    if result:
-        sys.exit(result)
 
 
 def shescape(args):
@@ -83,8 +91,7 @@ def shescape(args):
                     '"' if ' ' in arg else '') for arg in args)
 
 
-def bootstrap_virtenv(dest, prompt='(volttron)',
-                      version=None, verbose=None):
+def bootstrap(dest, prompt='(volttron)', version=None, verbose=None):
     '''Download latest virtualenv and create a virtual environment.
 
     The virtual environment will be created in the given directory. The
@@ -126,6 +133,17 @@ def bootstrap_virtenv(dest, prompt='(volttron)',
                 sys.exit(1)
             return response
 
+        def _url_available(self, url):
+            '''Open url and if response is 200 then return True else return False'''
+            _log.debug('Checking url %s', url)
+            try:
+                response = urllib2.urlopen(url)
+                if response.getcode() != 200:
+                    return False
+            except urllib2.HTTPError:
+                return False
+            return True
+
         def get_version(self):
             '''Return the latest version from virtualenv DOAP record.'''
             _log.info('Downloading virtualenv DOAP record')
@@ -141,8 +159,13 @@ def bootstrap_virtenv(dest, prompt='(volttron)',
             '''Download the virtualenv tarball into directory.'''
             if self.version is None:
                 self.get_version()
+            default_version = "15.1.0"
             url = ('https://github.com/pypa/virtualenv/archive/'
                    '{}.tar.gz'.format(self.version))
+            if not self._url_available(url):
+                self.version = default_version
+                url = ('https://github.com/pypa/virtualenv/archive/'
+                        '{}.tar.gz'.format(self.version))
             _log.info('Downloading virtualenv %s', self.version)
             tarball = os.path.join(directory, 'virtualenv.tar.gz')
             with contextlib.closing(self._fetch(url)) as response:
@@ -159,15 +182,13 @@ def bootstrap_virtenv(dest, prompt='(volttron)',
                 args = [sys.executable]
                 args.append(os.path.join(tmpdir, 'virtualenv-{}'.format(
                     self.version), 'virtualenv.py'))
-                if verbose:
-                    args.append('--verbose')
-                elif verbose is not None:
-                    args.append('--quiet')
+                if verbose is not None:
+                    args.append('--verbose' if verbose else '--quiet')
                 if self.prompt:
                     args.extend(['--prompt', prompt])
                 args.append(directory)
                 _log.debug('+ %s', shescape(args))
-                check_call(args)
+                subprocess.check_call(args)
                 if _WINDOWS:
                     self.env_exe = os.path.join(
                         directory, 'Scripts', 'python.exe')
@@ -183,143 +204,66 @@ def bootstrap_virtenv(dest, prompt='(volttron)',
     return builder.env_exe
 
 
-def split_requirement(req):
-    '''Return package name (without version) and requirement tuple.'''
-    for i, c in enumerate(req):
-        if not c.isalnum() and c not in '.-_':
-            return req[:i].lower(), req
-    return req.lower(), req
-
-
-def get_requirements(requirements_path=None):
-    '''Get a list for requirements from setup.py.
-
-    Optional requirements file may also be parsed.
-
-    Returns a dictionary with package names as key.
-    '''
-    from setup import install_requires
-    class ReqDict(dict):
-        def __missing__(self, key):
-            return self.get(key.lower(), key)
-    results = ReqDict(split_requirement(req) for req in install_requires)
-    if requirements_path and os.path.exists(requirements_path):
-        with open(requirements_path) as file:
-            results.update(dict(split_requirement(req) for req in
-                                (line.strip() for line in file)
-                                if req and not req.startswith('#')))
-    return results
-
-
-def call_module(args):
-    '''Call a python module with the given args in a separate process.
-
-    Exit if the return code is non-zero.
-    '''
-    _log.info('+ %s', shescape(args))
-    check_call([sys.executable, '-m'] + args)
-
-
-def pip_install(args, verbose=None, upgrade=False):
-    '''Call virtual environment `pip install`.'''
-    cmd = ['pip', 'install']
-    if verbose:
-        cmd.extend(['--verbose', '--global-option', '--verbose'])
-    elif verbose is None:
-        cmd.extend(['--global-option', '--quiet'])
-    else:
-        cmd.extend(['--quiet', '--global-option', '--quiet'])
-    if upgrade:
+def pip(operation, args, verbose=None, upgrade=False, offline=False):
+    '''Call pip in the virtual environment to perform operation.'''
+    cmd = ['pip', operation]
+    if verbose is not None:
+        cmd.append('--verbose' if verbose else '--quiet')
+    if upgrade and operation == 'install':
         cmd.append('--upgrade')
+    if offline:
+        cmd.extend(['--retries', '0', '--timeout', '1'])
     cmd.extend(args)
-    call_module(cmd)
+    _log.info('+ %s', shescape(cmd))
+    cmd[:0] = [sys.executable, '-m']
+    subprocess.check_call(cmd)
 
 
-def easy_install(args, verbose=None, upgrade=False):
-    '''Call virtual environment easy_install.'''
-    cmd = ['easy_install']
-    if verbose:
-        cmd.append('--verbose')
-    elif verbose is not None:
-        cmd.append('--quiet')
-    if upgrade:
-        cmd.append('--upgrade')
-    cmd.extend(args)
-    call_module(cmd)
-
-
-def install(verbose=False):
+def update(operation, verbose=None, upgrade=False, offline=False):
     '''Install dependencies in setup.py and requirements.txt.'''
+    from setup import (option_requirements, local_requirements,
+                       optional_requirements)
+    assert operation in ['install', 'wheel']
+    wheeling = operation == 'wheel'
     path = os.path.dirname(__file__) or '.'
-    _log.info('Installing required packages')
-    requirements_txt = os.path.join(path, 'requirements.txt')
-    requirements = get_requirements(requirements_txt)
-    # Upgrade pip to avoid warning upgrade messages
-    pip_install(['pip'], verbose, True)
-    # Get bacpypes with easy_install, because it is only provided as an egg
-    easy_install([requirements['BACpypes']], verbose)
-    # Build pyzmq separately to pass install options
-    pip_install(
-        ['--install-option', '--zmq=bundled', requirements['pyzmq']], verbose)
+    _log.info('%sing required packages', 'Build' if wheeling else 'Install')
+    if wheeling:
+        try:
+            import wheel
+        except ImportError:
+            pip('install', ['wheel'], verbose, offline=offline)
+    # Build option_requirements separately to pass install options
+    build_option = '--build-option' if wheeling else '--install-option'
+    for requirement, options in option_requirements:
+        args = []
+        for opt in options:
+            args.extend([build_option, opt])
+        args.extend(['--no-deps', requirement])
+        pip(operation, args, verbose, upgrade, offline)
+    # Build the optional requirements that the user specified via the command
+    # line.
+    for requirement in optional_requirements:
+        pip('install', [requirement], verbose, upgrade, offline)
     # Install local packages and remaining dependencies
-    args = ['--editable', os.path.join(path, 'lib', 'jsonrpc'),
-            '--editable', os.path.join(path, 'lib', 'clock'),
-            '--editable', path]
+    args = []
+    for _, location in local_requirements:
+        args.extend(['--editable', os.path.join(path, location)])
+    args.extend(['--editable', path])
+    requirements_txt = os.path.join(path, 'requirements.txt')
     if os.path.exists(requirements_txt):
         args.extend(['--requirement', requirements_txt])
-    pip_install(args, verbose)
-
-
-def upgrade(packages, verbose=False):
-    '''Upgrade installed packages.
-
-    packages should be a list of packages to be upgraded or evaluate to
-    False to upgrade all packages. If the first element in packages is
-    '!', all packages except those in packages[1:] will be upgraded.
-    '''
-    from pip.utils import get_installed_distributions
-    path = os.path.dirname(__file__) or '.'
-    requirements = get_requirements(os.path.join(path, 'requirements.txt'))
-    if packages and packages[0] != '!':
-        packages = {name.lower(): requirements[name] for name in packages}
-    else:
-        exclude = packages[1:] if packages else []
-        exclude.extend(['volttron', 'flexible-jsonrpc', 'posix-clock'])
-        packages = {dist.project_name.lower(): requirements[dist.project_name]
-                    for dist in
-                        get_installed_distributions(include_editables=False)}
-        for name in exclude:
-            packages.pop(name.lower(), None)
-
-    _log.info('Updating packages')
-    # Update bacpypes with easy_install, because it is only provided as an egg
-    requirement = packages.pop('bacpypes', None)
-    if requirement:
-        easy_install([requirement], verbose, True)
-    # Update pip before others to limit upgrade warning message
-    requirement = packages.pop('pip', None)
-    if requirement:
-        pip_install([requirement], verbose, True)
-    # Update pyzmq separately to pass install options
-    requirement = packages.pop('pyzmq', None)
-    if requirement:
-        pip_install(['--install-option', '--zmq=bundled', requirement],
-                    verbose, True)
-    # Update remaining packages
-    if packages:
-        pip_install(packages.values(), verbose, True)
-
-
-class HelpFormatter(argparse.HelpFormatter):
-    '''Custom formatter to improve -u/--upgrade help.'''
-    def _format_action_invocation(self, action):
-        if action.dest == 'upgrade':
-            return '-u, --upgrade [[!] PKG...]'
-        return super(HelpFormatter, self)._format_action_invocation(action)
+    pip(operation, args, verbose, upgrade, offline)
 
 
 def main(argv=sys.argv):
     '''Script entry point.'''
+
+    # Refuse to run as root
+    if not getattr(os, 'getuid', lambda: -1)():
+        sys.stderr.write('%s: error: refusing to run as root to prevent '
+                         'potential damage.\n' % os.path.basename(argv[0]))
+        sys.exit(77)
+
     # Unfortunately, many dependencies are not yet available in Python3.
     if sys.version_info[:2] != (2, 7):
         sys.stderr.write('error: Python 2.7 is required\n')
@@ -333,23 +277,16 @@ def main(argv=sys.argv):
     parser = argparse.ArgumentParser(
         description='Bootstrap and update a virtual Python environment '
                     'for VOLTTRON development.',
-        usage='\n  bootstrap: python2.7 %(prog)s [OPTIONS]...'
-              '\n  update:    {} %(prog)s [OPTIONS]...'.format(python),
+        usage='\n  bootstrap: python2.7 %(prog)s [options]'
+              '\n  update:    {} %(prog)s [options]'.format(python),
         prog=os.path.basename(argv[0]),
-        formatter_class=HelpFormatter,
         epilog='''
             The first invocation of this script, which should be made
-            using the system, Python, will create a virtual Python
-            environment in a subdirectory named 'env' in the same directory
-            as this script or in the directory given by the --envdir option.
+            using the system Python, will create a virtual Python
+            environment in the 'env' subdirectory in the same directory as
+            this script or in the directory given by the --envdir option.
             Subsequent invocations of this script should use the Python
-            executable installed in the virtual environment. If no arguments
-            are given with the -u/--upgrade option, all installed packages
-            will be upgraded. Packages may be limited, by listing the
-            packages that should be updated, or excluded, by including a
-            bang (!) as the first item in the list. Some shells may require
-            escaping the bang.'''
-
+            executable installed in the virtual environment.'''
     )
     verbose = parser.add_mutually_exclusive_group()
     verbose.add_argument(
@@ -363,21 +300,47 @@ def main(argv=sys.argv):
         '--envdir', default=None, metavar='VIRTUAL_ENV',
         help='alternate location for virtual environment')
     bs.add_argument(
-        '--force', action='store_true',
+        '--force', action='store_true', default=False,
         help='force installing in non-empty directory')
     bs.add_argument(
-        '-o', '--only-virtenv', action='store_true',
+        '-o', '--only-virtenv', action='store_true', default=False,
         help='create virtual environment and exit (skip install)')
     bs.add_argument(
         '--prompt', default='(volttron)', help='provide alternate prompt '
         'in activated environment (default: %(default)s)')
     bs.add_argument('--force-version', help=argparse.SUPPRESS)
+
+    # allows us to look and see if any of the dynamic optional arguments
+    # are on the command line.  We check this during the processing of the args
+    # variable at the end of the block.  If the option is set then it needs
+    # to be passed on.
+    optional_args = []
+    if os.path.exists('optional_requirements.json'):
+        po = parser.add_argument_group('Extra packaging options')
+        with open('optional_requirements.json', 'r') as optional_arguments:
+            data = json.load(optional_arguments)
+            for arg, vals in data.items():
+                optional_args.append(arg)
+                if 'help' in vals.keys():
+                    po.add_argument(arg, action='store_true', default=False,
+                                    help=vals['help'])
+                else:
+                    po.add_argument(arg, action='store_true', default=False)
+
+    # Update options
     up = parser.add_argument_group('update options')
     up.add_argument(
-        '-u', '--upgrade', nargs='*', metavar='PKG',
+        '--offline', action='store_true', default=False,
+        help='install from cache without downloading')
+    ex = up.add_mutually_exclusive_group()
+    ex.add_argument(
+        '-u', '--upgrade', action='store_true', default=False,
         help='upgrade installed packages')
+    ex.add_argument(
+        '-w', '--wheel', action='store_const', const='wheel', dest='operation',
+        help='build wheels in the pip wheelhouse')
     path = os.path.dirname(__file__) or os.getcwd()
-    parser.set_defaults(envdir=os.path.join(path, 'env'))
+    parser.set_defaults(envdir=os.path.join(path, 'env'), operation='install')
     options = parser.parse_args(argv[1:])
 
     # Route errors to stderr, info and debug to stdout
@@ -395,10 +358,8 @@ def main(argv=sys.argv):
     # Main script logic to perform bootstrapping or updating
     if hasattr(sys, 'real_prefix'):
         # The script was called from a virtual environment Python, so update
-        if options.upgrade is not None:
-            upgrade(options.upgrade, options.verbose)
-        else:
-            install(options.verbose)
+        update(options.operation, options.verbose,
+               options.upgrade, options.offline)
     else:
         # The script was called from the system Python, so bootstrap
         try:
@@ -417,15 +378,20 @@ def main(argv=sys.argv):
         except OSError as exc:
             if exc.errno != errno.ENOENT:
                 raise
-        env_exe = bootstrap_virtenv(options.envdir, options.prompt,
-                                    options.force_version, options.verbose)
+        env_exe = bootstrap(options.envdir, options.prompt,
+                            options.force_version, options.verbose)
         if options.only_virtenv:
             return
         # Run this script within the virtual environment for stage2
         args = [env_exe, __file__]
         if options.verbose is not None:
             args.append('--verbose' if options.verbose else '--quiet')
-        check_call(args)
+        # Transfer dynamic properties to the subprocess call 'update'.
+        # Clip off the first two characters expecting long parameter form.
+        for arg in optional_args:
+            if getattr(options, arg[2:]):
+                args.append(arg)
+        subprocess.check_call(args)
 
 
 if __name__ == "__main__":
@@ -433,3 +399,5 @@ if __name__ == "__main__":
         main()
     except KeyboardInterrupt:
         pass
+    except subprocess.CalledProcessError as exc:
+        sys.exit(exc.returncode)
