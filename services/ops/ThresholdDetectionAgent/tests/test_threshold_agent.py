@@ -51,7 +51,7 @@ from volttron.platform.vip.agent import Agent, Core, PubSub, RPC, compat
 from volttron.platform.agent import utils
 from volttron.platform.messaging.health import Status, STATUS_BAD
 from volttrontesting.utils.utils import AgentMock
-from services.ops.ThresholdDetectionAgent.thresholddetection.agent import ThresholdDetectionAgent
+from thresholddetection.agent import ThresholdDetectionAgent
 
 utils.setup_logging()
 _log = logging.getLogger(__name__)
