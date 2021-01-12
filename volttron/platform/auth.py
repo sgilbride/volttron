@@ -43,6 +43,7 @@ import os
 import random
 import re
 import shutil
+from typing import Optional
 import copy
 import uuid
 from collections import defaultdict
@@ -53,7 +54,7 @@ from gevent.fileobject import FileObject
 from zmq import green as zmq
 
 from volttron.platform import jsonapi, get_home
-from volttron.platform.agent.known_identities import VOLTTRON_CENTRAL_PLATFORM, CONTROL, MASTER_WEB
+from volttron.platform.agent.known_identities import VOLTTRON_CENTRAL_PLATFORM, CONTROL, MASTER_WEB, CONTROL_CONNECTION
 from volttron.platform.jsonrpc import MethodNotFound, RemoteError
 from volttron.platform.vip.agent.errors import VIPError, Unreachable
 from volttron.platform.vip.pubsubservice import ProtectedPubSubTopics
@@ -294,12 +295,13 @@ class AuthService(Agent):
                 exception = e
 
         if not peers:
-            raise exception
+            raise BaseException("No peers connected to the platform")
 
         _log.debug("after getting peerlist to send auth updates")
 
         for peer in peers:
-            if peer not in [self.core.identity]:
+            if peer not in [self.core.identity, CONTROL_CONNECTION]:
+                _log.debug(f"Sending auth update to peers {peer}")
                 self.vip.rpc.call(peer, 'auth.update', user_to_caps)
         if self.core.messagebus == 'rmq':
             self._check_rmq_topic_permissions()
@@ -504,6 +506,7 @@ class AuthService(Agent):
         :param user_id: user id field from VOLTTRON Interconnect Protocol
         :type user_id: str
         """
+
         for pending in self._auth_failures:
             if user_id == pending['user_id']:
                 self._update_auth_entry(
@@ -862,7 +865,7 @@ class AuthEntry(object):
 
     def __init__(self, domain=None, address=None, mechanism='CURVE',
                  credentials=None, user_id=None, identity=None, groups=None, roles=None,
-                 capabilities=None, rpc_method_authorizations=None,
+                 capabilities: Optional[dict] = None, rpc_method_authorizations=None,
                  comments=None, enabled=True, **kwargs):
 
         self.domain = AuthEntry._build_field(domain)
@@ -904,7 +907,7 @@ class AuthEntry(object):
         return List(String(elem) for elem in value)
 
     @staticmethod
-    def build_capabilities_field(value):
+    def build_capabilities_field(value: Optional[dict]):
         #_log.debug("_build_capabilities {}".format(value))
 
         if not value:
@@ -1009,8 +1012,7 @@ class AuthEntry(object):
 class AuthFile(object):
     def __init__(self, auth_file=None):
         if auth_file is None:
-            auth_file_dir = os.path.expanduser(
-                os.environ.get('VOLTTRON_HOME', '~/.volttron'))
+            auth_file_dir = get_home()
             auth_file = os.path.join(auth_file_dir, 'auth.json')
         self.auth_file = auth_file
         self._check_for_upgrade()
@@ -1068,8 +1070,7 @@ class AuthFile(object):
         _log.info('Created backup of {} at {}'.format(self.auth_file, backup))
 
         def warn_invalid(entry, msg=''):
-            _log.warn('Invalid entry {} in auth file {}. {}'
-                      .format(entry, self.auth_file, msg))
+            _log.warning('Invalid entry {} in auth file {}. {}'.format(entry, self.auth_file, msg))
 
         def upgrade_0_to_1(allow_list):
             new_allow_list = []
@@ -1123,7 +1124,7 @@ class AuthFile(object):
                         msg = ('user_id {} is already present in '
                                'authentication entry. Changed to user_id to '
                                '{}').format(user_id, new_user_id)
-                        _log.warn(msg)
+                        _log.warning(msg)
                         user_id_ = new_user_id
                 else:
                     user_id = str(uuid.uuid4())
@@ -1192,11 +1193,9 @@ class AuthFile(object):
             try:
                 entry = AuthEntry(**file_entry)
             except TypeError:
-                _log.warn('invalid entry %r in auth file %s',
-                          file_entry, self.auth_file)
+                _log.warning('invalid entry %r in auth file %s', file_entry, self.auth_file)
             except AuthEntryInvalid as e:
-                _log.warn('invalid entry %r in auth file %s (%s)',
-                          file_entry, self.auth_file, str(e))
+                _log.warning('invalid entry %r in auth file %s (%s)', file_entry, self.auth_file, str(e))
             else:
                 entries.append(entry)
         return entries
@@ -1233,17 +1232,21 @@ class AuthFile(object):
         for index in indices:
             self.update_by_index(auth_entry, index)
 
-    def add(self, auth_entry, overwrite=False):
+    def add(self, auth_entry, overwrite=False, no_error=False):
         """Adds an AuthEntry to the auth file
 
         :param auth_entry: authentication entry
         :param overwrite: set to true to overwrite matching entries
+        :param no_error:
+            set to True to not throw an AuthFileEntryAlreadyExists when attempting to add an exiting entry.
+
         :type auth_entry: AuthEntry
         :type overwrite: bool
+        :type no_error: bool
 
         .. warning:: If overwrite is set to False and if auth_entry matches an
                      existing entry then this method will raise
-                     AuthFileEntryAlreadyExists
+                     AuthFileEntryAlreadyExists unless no_error is set to true
         """
         try:
             self._check_if_exists(auth_entry)
@@ -1252,7 +1255,8 @@ class AuthFile(object):
                 _log.debug("Updating existing auth entry with {} ".format(auth_entry))
                 self._update_by_indices(auth_entry, err.indices)
             else:
-                raise err
+                if not no_error:
+                    raise err
         else:
             entries, groups, roles = self.read()
             entries.append(auth_entry)
